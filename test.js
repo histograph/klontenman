@@ -1,9 +1,20 @@
 var neo4j = require('neo4j');
-var db = new neo4j.GraphDatabase('http://neo4j:waag@localhost:7474');
+var db = new neo4j.GraphDatabase('http://neo4j:waag@localhost:3000');
 var crypto = require('crypto')
 var async = require('async');
+var util = require('util');
 
-// var conf = require(process.env.HISTOGRAPH_CONFIG).core.neo4j
+var dataSets;
+
+//run project with: node test.js datasets=kloeke,nvb,etc
+
+process.argv.forEach(function(string){
+  var split = string.split('=');
+  if(split.length > 1 && split[0] === 'datasets'){
+    dataSets = split[1].split(',');
+    console.log('datasets to take into account: ' + dataSets.join(', '));
+  }
+});
 
 function hashIds(ids)
 {
@@ -31,48 +42,67 @@ function klont(n, callback)
 	if(hash){
 		return callback(null, hash);
 	}
-		
 
-	async.waterfall([
+  return async.waterfall([
 
 		// find all connected nodes
 		db.cypher.bind(db, {
-			    query: [
-			    	'START n=node({start})',
-					'MATCH p = (n)-[*0..5]->(m)',
-					'RETURN DISTINCT m'
-			    ],
-			    params: {
-			        start: n
-			    },
-			}),
+		    query: [
+		    	'START n=node({start})',
+				  'MATCH p = (n:PIT)-[:SAMEHGCONCEPT*0..5]->(m:PIT)',
+				  'RETURN DISTINCT m'
+		    ].join('\n'),
+		    params: {
+		        start: n
+		    }
+		}),
 			
 		// process results
 		function (results, callback) {
+      if(!results.length) return callback();
 
-			// extract the Neo4J node id's
-			var node_ids = results.map(function(r){
-				return r.m._id;
-			});
-			
-			// extract HG id's
-			// TODO actually map hgIds, not name
-			var hg_ids = results.map(function(r){
-				return r.m.properties.name;
-			});
-			
+      var node_ids = [],
+          hg_ids = [];
+
+      results.forEach(function(r){
+        node_ids.push(r.m._id);
+        
+        if(!dataSets.length || ~dataSets.indexOf(r.m.properties.sourceid)){
+          hg_ids.push(r.m.properties.hgid);
+        }
+      });
+
+
 			// hash it
-			var hash = hashIds(hg_ids);
+			var hash = hg_ids.length ? hashIds(hg_ids) : true;
+      
+      
+      // avoid doing duplicate work
+      record_visits(node_ids, hash);
 			
-			// avoid doing duplicate work
-			record_visits(node_ids, hash);
-			
-			console.log(JSON.stringify({hgConceptId: hash, PITs: hg_ids}));
-			callback(null, hash);
+			if(hash !== true) console.log(JSON.stringify({hgConceptId: hash, PITs: hg_ids}));
+			callback();
 		}
 	], callback);
 }
 
-async.mapSeries([0,1,2,3], klont);
+function init(){
+  db.cypher({
+    query: [
+      'Match (node)',
+      'Return node',
+      'Order by ID(node) desc',
+      'Limit 1'
+    ].join('\n')
+  }, function(err, results){
+    var max = results[0].node._id + 1;
+
+    async.timesSeries(max, klont, function done(err){
+      console.log(err || 'yay');
+    });
+  });
+}
+
+init();
 
 
